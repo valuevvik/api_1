@@ -1,13 +1,39 @@
-# app.py
-from fastapi import FastAPI, HTTPException, Query
-from pydantic import BaseModel, Field
-from datetime import datetime
-from typing import Optional
-import uuid
+from fastapi import FastAPI, HTTPException, Depends, Query
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import BaseModel
+from datetime import datetime, timedelta
+from typing import Optional, List
+import uuid, jwt, hashlib
+
+SECRET = "secret"
+ALGO = "HS256"
 
 app = FastAPI()
+security = HTTPBearer(auto_error=False)
+
+users = {}
 ads = {}
 
+def hash_pw(p): return hashlib.sha256(p.encode()).hexdigest()
+
+class UserCreate(BaseModel):
+    username: str
+    password: str
+    group: str = "user"
+
+class UserUpdate(BaseModel):
+    username: Optional[str] = None
+    password: Optional[str] = None
+    group: Optional[str] = None
+
+class User(BaseModel):
+    id: str
+    username: str
+    group: str
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
 
 class AdCreate(BaseModel):
     title: str
@@ -15,13 +41,11 @@ class AdCreate(BaseModel):
     price: float
     author: str
 
-
 class AdUpdate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     price: Optional[float] = None
     author: Optional[str] = None
-
 
 class Ad(BaseModel):
     id: str
@@ -30,55 +54,18 @@ class Ad(BaseModel):
     price: float
     author: str
     created_at: datetime
+    owner_id: str
 
+def get_current_user(cred: Optional[HTTPAuthorizationCredentials] = Depends(security)):
+    if cred is None:
+        return None
+    try:
+        payload = jwt.decode(cred.credentials, SECRET, algorithms=[ALGO])
+    except jwt.PyJWTError:
+        return None
+    return users.get(payload.get("sub"))
 
-@app.post("/advertisement", response_model=Ad, status_code=201)
-def create_ad(data: AdCreate):
-    ad_id = str(uuid.uuid4())
-    ad = Ad(id=ad_id, created_at=datetime.utcnow(), **data.model_dump())
-    ads[ad_id] = ad
-    return ad
-
-
-@app.get("/advertisement/{advertisement_id}", response_model=Ad)
-def get_ad(advertisement_id: str):
-    ad = ads.get(advertisement_id)
-    if not ad:
-        raise HTTPException(404, "not found")
-    return ad
-
-
-@app.patch("/advertisement/{advertisement_id}", response_model=Ad)
-def update_ad(advertisement_id: str, data: AdUpdate):
-    ad = ads.get(advertisement_id)
-    if not ad:
-        raise HTTPException(404, "not found")
-    updated = ad.model_copy(update={k: v for k, v in data.model_dump().items() if v is not None})
-    ads[advertisement_id] = updated
-    return updated
-
-
-@app.delete("/advertisement/{advertisement_id}")
-def delete_ad(advertisement_id: str):
-    if ads.pop(advertisement_id, None) is None:
-        raise HTTPException(404, "not found")
-    return {"status": "deleted"}
-
-
-@app.get("/advertisement", response_model=list[Ad])
-def search_ads(
-    title: Optional[str] = None,
-    description: Optional[str] = None,
-    price: Optional[float] = None,
-    author: Optional[str] = None,
-):
-    result = ads.values()
-    if title is not None:
-        result = [a for a in result if title.lower() in a.title.lower()]
-    if description is not None:
-        result = [a for a in result if description.lower() in a.description.lower()]
-    if price is not None:
-        result = [a for a in result if a.price == price]
-    if author is not None:
-        result = [a for a in result if author.lower() in a.author.lower()]
-    return list(result)
+def require_user(user = Depends(get_current_user)):
+    if not user:
+        raise HTTPException(401, "unauthorized")
+    return user
